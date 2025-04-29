@@ -4,6 +4,12 @@ from src.logger import Logger
 
 
 def init_devika():
+    """Initialize Devika by setting up necessary directories and loading required models.
+    
+    This function initializes various components of Devika, including logging, configuration settings, directory creation
+    for storage, and loading a sentence-transformer BERT model. It ensures that all prerequisites are in place before
+    proceeding with further operations.
+    """
     logger = Logger()
 
     logger.info("Initializing Devika...")
