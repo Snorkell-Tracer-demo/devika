@@ -1,85 +1,156 @@
-from enum import Enum
+import sys
+
+import tiktoken
 from typing import List, Tuple
 
+from src.socket_instance import emit_agent
 from .ollama_client import Ollama
 from .claude_client import Claude
-from .openai_client import OpenAI
+from .openai_client import OpenAi
+from .gemini_client import Gemini
+from .mistral_client import MistralAi
 from .groq_client import Groq
+from .lm_studio_client import LMStudio
 
 from src.state import AgentState
 
-import tiktoken
+from src.config import Config
+from src.logger import Logger
 
-from ..config import Config
-from ..logger import Logger
-
-TOKEN_USAGE = 0
 TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
 
-class Model(Enum):
-    CLAUDE_3_OPUS = ("Claude 3 Opus", "claude-3-opus-20240229")
-    CLAUDE_3_SONNET = ("Claude 3 Sonnet", "claude-3-sonnet-20240229")
-    CLAUDE_3_HAIKU = ("Claude 3 Haiku", "claude-3-haiku-20240307")
-    GPT_4_TURBO = ("GPT-4 Turbo", "gpt-4-0125-preview")
-    GPT_3_5 = ("GPT-3.5", "gpt-3.5-turbo-0125")
-    OLLAMA_MODELS = [
-        (
-            model["name"].split(":")[0],
-            model["name"],
-        )
-        for model in Ollama.list_models()
-    ]
-    GROQ_MIXTRAL_8X7B_32768 = ("GROQ Mixtral", "mixtral-8x7b-32768")
-    GROQ_LLAMA2_70B_4096 = ("GROQ LLAMA2-70B", "llama2-70b-4096")
-    GROQ_GEMMA_7B_IT = ("GROQ GEMMA-7B-IT", "gemma-7b-it")
+ollama = Ollama()
+logger = Logger()
+agentState = AgentState()
+config = Config()
 
-
-logger = Logger(filename="devika_prompts.log")
 
 class LLM:
     def __init__(self, model_id: str = None):
         self.model_id = model_id
-        self.log_prompts = Config().get_logging_prompts()
-    
-    def list_models(self) -> List[Tuple[str, str]]:
-        return [model.value for model in Model if model.name != "OLLAMA_MODELS"] + list(
-            Model.OLLAMA_MODELS.value
-        )
+        self.log_prompts = config.get_logging_prompts()
+        self.timeout_inference = config.get_timeout_inference()
+        self.models = {
+            "CLAUDE": [
+                ("Claude 3 Opus", "claude-3-opus-20240229"),
+                ("Claude 3 Sonnet", "claude-3-sonnet-20240229"),
+                ("Claude 3 Haiku", "claude-3-haiku-20240307"),
+            ],
+            "OPENAI": [
+                ("GPT-4o-mini", "gpt-4o-mini"),
+                ("GPT-4o", "gpt-4o"),
+                ("GPT-4 Turbo", "gpt-4-turbo"),
+                ("GPT-3.5 Turbo", "gpt-3.5-turbo-0125"),
+            ],
+            "GOOGLE": [
+                ("Gemini 1.0 Pro", "gemini-pro"),
+                ("Gemini 1.5 Flash", "gemini-1.5-flash"),
+                ("Gemini 1.5 Pro", "gemini-1.5-pro"),
+            ],
+            "MISTRAL": [
+                ("Mistral 7b", "open-mistral-7b"),
+                ("Mistral 8x7b", "open-mixtral-8x7b"),
+                ("Mistral Medium", "mistral-medium-latest"),
+                ("Mistral Small", "mistral-small-latest"),
+                ("Mistral Large", "mistral-large-latest"),
+            ],
+            "GROQ": [
+                ("LLAMA3 8B", "llama3-8b-8192"),
+                ("LLAMA3 70B", "llama3-70b-8192"),
+                ("LLAMA2 70B", "llama2-70b-4096"),
+                ("Mixtral", "mixtral-8x7b-32768"),
+                ("GEMMA 7B", "gemma-7b-it"),
+            ],
+            "OLLAMA": [],
+            "LM_STUDIO": [
+                ("LM Studio", "local-model"),    
+            ],
+            
+        }
+        if ollama.client:
+            self.models["OLLAMA"] = [(model["name"], model["name"]) for model in ollama.models]
 
-    def model_id_to_enum_mapping(self):
-        models = {model.value[1]: model for model in Model if model.name != "OLLAMA_MODELS"}
-        ollama_models = {model[1]: "OLLAMA_MODELS" for model in Model.OLLAMA_MODELS.value}
-        models.update(ollama_models)
-        return models
+    def list_models(self) -> dict:
+        return self.models
 
-    def update_global_token_usage(self, string: str, project_name: str):
+    def model_enum(self, model_name: str) -> Tuple[str, str]:
+        model_dict = {
+            model[0]: (model_enum, model[1]) 
+            for model_enum, models in self.models.items() 
+            for model in models
+        }
+        return model_dict.get(model_name, (None, None))
+
+    @staticmethod
+    def update_global_token_usage(string: str, project_name: str):
         token_usage = len(TIKTOKEN_ENC.encode(string))
-        AgentState().update_token_usage(project_name, token_usage)
+        agentState.update_token_usage(project_name, token_usage)
 
-    def inference(
-        self, prompt: str, project_name: str
-    ) -> str:
+        total = agentState.get_latest_token_usage(project_name) + token_usage
+        emit_agent("tokens", {"token_usage": total})
+
+    def inference(self, prompt: str, project_name: str) -> str:
         self.update_global_token_usage(prompt, project_name)
-        
-        model = self.model_id_to_enum_mapping()[self.model_id]
 
-        if self.log_prompts:
-            logger.debug(f"Prompt ({model}): --> {prompt}")
+        model_enum, model_name = self.model_enum(self.model_id)
+                
+        print(f"Model: {self.model_id}, Enum: {model_enum}")
+        if model_enum is None:
+            raise ValueError(f"Model {self.model_id} not supported")
 
-        if model == "OLLAMA_MODELS":
-            response = Ollama().inference(self.model_id, prompt).strip()
-        elif "CLAUDE" in str(model):
-            response = Claude().inference(self.model_id, prompt).strip()
-        elif "GPT" in str(model):
-            response = OpenAI().inference(self.model_id, prompt).strip()
-        elif "GROQ" in str(model):
-            response = Groq().inference(self.model_id, prompt).strip()
-        else:
-            raise ValueError(f"Model {model} not supported")
+        model_mapping = {
+            "OLLAMA": ollama,
+            "CLAUDE": Claude(),
+            "OPENAI": OpenAi(),
+            "GOOGLE": Gemini(),
+            "MISTRAL": MistralAi(),
+            "GROQ": Groq(),
+            "LM_STUDIO": LMStudio()
+        }
+
+        try:
+            import concurrent.futures
+            import time
+
+            start_time = time.time()
+            model = model_mapping[model_enum]
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(model.inference, model_name, prompt)
+                try:
+                    while True:
+                        elapsed_time = time.time() - start_time
+                        elapsed_seconds = format(elapsed_time, ".2f")
+                        emit_agent("inference", {"type": "time", "elapsed_time": elapsed_seconds})
+                        if int(elapsed_time) == 5:
+                            emit_agent("inference", {"type": "warning", "message": "Inference is taking longer than expected"})
+                        if elapsed_time > self.timeout_inference:
+                            raise concurrent.futures.TimeoutError
+                        if future.done():
+                            break
+                        time.sleep(0.5)
+
+                    response = future.result(timeout=self.timeout_inference).strip()
+
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"Inference failed. took too long. Model: {model_enum}, Model ID: {self.model_id}")
+                    emit_agent("inference", {"type": "error", "message": "Inference took too long. Please try again."})
+                    response = False
+                    sys.exit()
+                
+                except Exception as e:
+                    logger.error(str(e))
+                    response = False
+                    emit_agent("inference", {"type": "error", "message": str(e)})
+                    sys.exit()
+
+
+        except KeyError:
+            raise ValueError(f"Model {model_enum} not supported")
 
         if self.log_prompts:
             logger.debug(f"Response ({model}): --> {response}")
 
         self.update_global_token_usage(response, project_name)
-        
+
         return response

@@ -1,67 +1,57 @@
 <script>
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { toast } from "svelte-sonner";
+
   import ControlPanel from "$lib/components/ControlPanel.svelte";
   import MessageContainer from "$lib/components/MessageContainer.svelte";
-  import InternalMonologue from "$lib/components/InternalMonologue.svelte";
   import MessageInput from "$lib/components/MessageInput.svelte";
   import BrowserWidget from "$lib/components/BrowserWidget.svelte";
   import TerminalWidget from "$lib/components/TerminalWidget.svelte";
-  import {
-    fetchProjectList,
-    fetchModelList,
-    fetchAgentState,
-    fetchMessages,
-    checkInternetStatus,
-  } from "$lib/api";
+  import EditorWidget from "../lib/components/EditorWidget.svelte";
+  import * as Resizable from "$lib/components/ui/resizable/index.js";
+
+  import { serverStatus } from "$lib/store";
+  import { initializeSockets, destroySockets } from "$lib/sockets";
+  import { checkInternetStatus, checkServerStatus } from "$lib/api";
+
+  let resizeEnabled =
+    localStorage.getItem("resize") &&
+    localStorage.getItem("resize") === "enable";
 
   onMount(() => {
-    localStorage.clear();
-
-    const intervalId = setInterval(async () => {
-      await fetchProjectList();
-      await fetchModelList();
-      await fetchAgentState();
-      await fetchMessages();
+    const load = async () => {
       await checkInternetStatus();
-    }, 1000);
 
-    return () => clearInterval(intervalId);
+      if(!(await checkServerStatus())) {
+        toast.error("Failed to connect to server");
+        return;
+      }
+      serverStatus.set(true);
+      await initializeSockets();
+    };
+    load();
+  });
+  onDestroy(() => {
+    destroySockets();
   });
 </script>
 
-<div class="flex flex-col p-4 h-full">
+<div class="flex h-full flex-col flex-1 gap-4 p-4 overflow-hidden">
   <ControlPanel />
 
-  <div class="flex h-full space-x-4">
-    <div class="flex flex-col w-1/2">
-      <MessageContainer />
-      <InternalMonologue />
-      <MessageInput />
+  <div class="flex h-full overflow-x-scroll">
+    <div class="flex flex-1 min-w-[calc(100vw-120px)] h-full gap-2">
+      <div class="flex flex-col gap-2 w-full h-full pr-4">
+        <MessageContainer />
+        <MessageInput />
+      </div>
+      <div class="flex flex-col gap-4 h-full w-full p-2">
+        <BrowserWidget />
+        <TerminalWidget />
+      </div>
     </div>
-
-    <div class="flex flex-col w-1/2 space-y-4">
-      <BrowserWidget />
-      <TerminalWidget />
+    <div class="flex flex-col gap-2 min-w-[calc(100vw-120px)] h-full pr-4 p-2">
+      <EditorWidget />
     </div>
   </div>
 </div>
-
-<style>
-  :global(::-webkit-scrollbar) {
-    width: 10px;
-  }
-
-  :global(::-webkit-scrollbar-track) {
-    background: #2d3748;
-    border-radius: 10px;
-  }
-
-  :global(::-webkit-scrollbar-thumb) {
-    background: #4a5568;
-    border-radius: 10px;
-  }
-
-  :global(::-webkit-scrollbar-thumb:hover) {
-    background: #6b7280;
-  }
-</style>
